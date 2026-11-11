@@ -1,0 +1,3 @@
+#include "geo.h"
+#include <math.h>
+double deg_to_rad(double x){return x*3.14159265358979323846/180.0;}double rad_to_deg(double x){return x*180.0/3.14159265358979323846;}int local_frame_init(LocalFrame*f,LatLon o){if(!f||o.lat_deg<=-90||o.lat_deg>=90||o.lon_deg<-180||o.lon_deg>180)return -1;f->origin=o;f->cos_lat0=cos(deg_to_rad(o.lat_deg));return 0;}Point2D geo_to_local(const LocalFrame*f,LatLon p){return (Point2D){EARTH_RADIUS_M*deg_to_rad(p.lon_deg-f->origin.lon_deg)*f->cos_lat0,EARTH_RADIUS_M*deg_to_rad(p.lat_deg-f->origin.lat_deg)};}LatLon local_to_geo(const LocalFrame*f,Point2D p){return (LatLon){f->origin.lat_deg+rad_to_deg(p.y/EARTH_RADIUS_M),f->origin.lon_deg+rad_to_deg(p.x/(EARTH_RADIUS_M*f->cos_lat0))};}
