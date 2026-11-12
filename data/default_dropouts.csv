@@ -1,0 +1,5 @@
+# GPS outages ("tunnels"): the receiver has no fix between start and end.
+# The first one is on a straight, the second one is partly inside the bend.
+start_s,end_s
+45,55
+68,73

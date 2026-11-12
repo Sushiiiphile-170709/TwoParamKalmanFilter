@@ -1,0 +1,14 @@
+# Default route, 110 s in total. One segment per line:
+#   duration_s   how long the segment lasts
+#   accel_mps2   acceleration along the track (negative = braking)
+#   yaw_rate     turn rate in rad/s (positive = left)
+# The car starts at 5 m/s heading east.
+duration_s,accel_mps2,yaw_rate_rad_s
+10,1,0
+15,0,0
+15,0,0.1
+20,0,0
+15,0,-0.1
+15,0,0
+10,-1,0
+10,0,0.1

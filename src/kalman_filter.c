@@ -1,9 +1,165 @@
 #include "kalman_filter.h"
+
 #include <math.h>
-#include <string.h>
-KalmanConfig kalman_default_config(void){return (KalmanConfig){1.0,5.0,25.0,100.0};}
-KfStatus kalman_init(KalmanFilter*f,const KalmanConfig*c){if(!f||!c||c->process_noise_accel_std<0||c->measurement_noise_std<=0||c->initial_position_variance<=0||c->initial_velocity_variance<=0)return KF_ERR_ARGUMENT;*f=(KalmanFilter){.config=*c};return KF_OK;}
-KfStatus kalman_initialize(KalmanFilter*f,double x,double y,double vx,double vy){if(!f)return KF_ERR_ARGUMENT;memset(f->p,0,sizeof f->p);f->x[0]=x;f->x[1]=y;f->x[2]=vx;f->x[3]=vy;f->p[0][0]=f->p[1][1]=f->config.initial_position_variance;f->p[2][2]=f->p[3][3]=f->config.initial_velocity_variance;f->initialized=true;return KF_OK;}
-KfStatus kalman_predict(KalmanFilter*f,double dt){if(!f||!isfinite(dt)||dt<0)return KF_ERR_ARGUMENT;if(!f->initialized)return KF_ERR_STATE;double F[4][4]={{1,0,dt,0},{0,1,0,dt},{0,0,1,0},{0,0,0,1}},tmp[4][4]={0},n[4][4]={0};double ox[4];memcpy(ox,f->x,sizeof ox);for(int i=0;i<4;i++){f->x[i]=0;for(int k=0;k<4;k++)f->x[i]+=F[i][k]*ox[k];for(int j=0;j<4;j++)for(int k=0;k<4;k++)tmp[i][j]+=F[i][k]*f->p[k][j];}for(int i=0;i<4;i++)for(int j=0;j<4;j++)for(int k=0;k<4;k++)n[i][j]+=tmp[i][k]*F[j][k];double s=f->config.process_noise_accel_std*f->config.process_noise_accel_std,d2=dt*dt,d3=d2*dt;n[0][0]+=s*d3/3;n[1][1]+=s*d3/3;n[0][2]+=s*d2/2;n[2][0]+=s*d2/2;n[1][3]+=s*d2/2;n[3][1]+=s*d2/2;n[2][2]+=s*dt;n[3][3]+=s*dt;memcpy(f->p,n,sizeof n);return KF_OK;}
-KfStatus kalman_update(KalmanFilter*f,double zx,double zy){if(!f)return KF_ERR_ARGUMENT;if(!f->initialized)return KF_ERR_STATE;double r=f->config.measurement_noise_std*f->config.measurement_noise_std;double s00=f->p[0][0]+r,s01=f->p[0][1],s10=f->p[1][0],s11=f->p[1][1]+r,det=s00*s11-s01*s10;if(fabs(det)<1e-12)return KF_ERR_SINGULAR;double inv[2][2]={{s11/det,-s01/det},{-s10/det,s00/det}},K[4][2];for(int i=0;i<4;i++){K[i][0]=f->p[i][0]*inv[0][0]+f->p[i][1]*inv[1][0];K[i][1]=f->p[i][0]*inv[0][1]+f->p[i][1]*inv[1][1];}double innov[2]={zx-f->x[0],zy-f->x[1]};for(int i=0;i<4;i++)f->x[i]+=K[i][0]*innov[0]+K[i][1]*innov[1];double A[4][4],newp[4][4]={0};for(int i=0;i<4;i++)for(int j=0;j<4;j++)A[i][j]=(i==j?1:0)-(j==0?K[i][0]:(j==1?K[i][1]:0));for(int i=0;i<4;i++)for(int j=0;j<4;j++){for(int a=0;a<4;a++)for(int b=0;b<4;b++)newp[i][j]+=A[i][a]*f->p[a][b]*A[j][b];newp[i][j]+=r*(K[i][0]*K[j][0]+K[i][1]*K[j][1]);}memcpy(f->p,newp,sizeof newp);return KF_OK;}
-double kalman_speed(const KalmanFilter*f){return f?hypot(f->x[2],f->x[3]):NAN;} double kalman_position_std(const KalmanFilter*f){return f?sqrt(fmax(0,f->p[0][0]+f->p[1][1])):NAN;}
+
+kf_config kf_config_default(void) {
+  kf_config c;
+  c.process_noise_accel_std = 1.0;
+  c.measurement_noise_std = 5.0;
+  c.initial_position_variance = 25.0;
+  c.initial_velocity_variance = 100.0;
+  return c;
+}
+
+kf_status kf_filter_init(kf_filter *filter, const kf_config *config) {
+  if (filter == NULL) return KF_ERR_INVALID_ARG;
+  const kf_config cfg = (config != NULL) ? *config : kf_config_default();
+
+  /* Each test is written so that NaN fails it. */
+  if (!(cfg.process_noise_accel_std >= 0.0) || !isfinite(cfg.process_noise_accel_std))
+    return KF_ERR_INVALID_ARG;
+  if (!(cfg.measurement_noise_std > 0.0) || !isfinite(cfg.measurement_noise_std))
+    return KF_ERR_INVALID_ARG;
+  if (!(cfg.initial_position_variance > 0.0) || !isfinite(cfg.initial_position_variance))
+    return KF_ERR_INVALID_ARG;
+  if (!(cfg.initial_velocity_variance > 0.0) || !isfinite(cfg.initial_velocity_variance))
+    return KF_ERR_INVALID_ARG;
+
+  kf_filter f;
+  f.config = cfg;
+  f.initialized = false;
+  KF_TRY(kf_mat_zero(&f.x, 4, 1));
+  KF_TRY(kf_mat_zero(&f.p, 4, 4));
+  *filter = f;
+  return KF_OK;
+}
+
+kf_status kf_filter_start(kf_filter *filter, double px, double py, double vx, double vy) {
+  if (filter == NULL) return KF_ERR_INVALID_ARG;
+  if (!isfinite(px) || !isfinite(py) || !isfinite(vx) || !isfinite(vy)) return KF_ERR_INVALID_ARG;
+
+  KF_MAT_AT(filter->x, 0, 0) = px;
+  KF_MAT_AT(filter->x, 1, 0) = py;
+  KF_MAT_AT(filter->x, 2, 0) = vx;
+  KF_MAT_AT(filter->x, 3, 0) = vy;
+
+  KF_TRY(kf_mat_zero(&filter->p, 4, 4));
+  KF_MAT_AT(filter->p, 0, 0) = filter->config.initial_position_variance;
+  KF_MAT_AT(filter->p, 1, 1) = filter->config.initial_position_variance;
+  KF_MAT_AT(filter->p, 2, 2) = filter->config.initial_velocity_variance;
+  KF_MAT_AT(filter->p, 3, 3) = filter->config.initial_velocity_variance;
+  filter->initialized = true;
+  return KF_OK;
+}
+
+bool kf_filter_is_initialized(const kf_filter *filter) {
+  return filter != NULL && filter->initialized;
+}
+
+kf_status kf_filter_predict(kf_filter *filter, double dt) {
+  if (filter == NULL) return KF_ERR_INVALID_ARG;
+  if (!filter->initialized) return KF_ERR_NOT_INITIALIZED;
+  if (!(dt >= 0.0) || !isfinite(dt)) return KF_ERR_INVALID_ARG;
+
+  /* State transition F of the constant-velocity model. */
+  kf_mat f;
+  KF_TRY(kf_mat_identity(&f, 4));
+  KF_MAT_AT(f, 0, 2) = dt;
+  KF_MAT_AT(f, 1, 3) = dt;
+
+  /* Process noise Q of a continuous white-noise-acceleration model, per axis:
+   *     S * [ dt^3/3  dt^2/2 ]
+   *         [ dt^2/2  dt     ]
+   * with S = sigma_a^2 * (1 s). The noise injected over a given time does not
+   * depend on how finely that time is cut into predict() calls. */
+  const double s_int = filter->config.process_noise_accel_std * filter->config.process_noise_accel_std;
+  const double dt2 = dt * dt;
+  const double dt3 = dt2 * dt;
+  kf_mat q;
+  KF_TRY(kf_mat_zero(&q, 4, 4));
+  KF_MAT_AT(q, 0, 0) = KF_MAT_AT(q, 1, 1) = s_int * dt3 / 3.0;
+  KF_MAT_AT(q, 0, 2) = KF_MAT_AT(q, 2, 0) = s_int * dt2 / 2.0;
+  KF_MAT_AT(q, 1, 3) = KF_MAT_AT(q, 3, 1) = s_int * dt2 / 2.0;
+  KF_MAT_AT(q, 2, 2) = KF_MAT_AT(q, 3, 3) = s_int * dt;
+
+  /* x' = F x     P' = F P F^T + Q. Results are committed only at the end. */
+  kf_mat x_new, ft, fp, fpft, p_new;
+  KF_TRY(kf_mat_mul(&f, &filter->x, &x_new));
+  KF_TRY(kf_mat_transpose(&f, &ft));
+  KF_TRY(kf_mat_mul(&f, &filter->p, &fp));
+  KF_TRY(kf_mat_mul(&fp, &ft, &fpft));
+  KF_TRY(kf_mat_add(&fpft, &q, &p_new));
+
+  filter->x = x_new;
+  filter->p = p_new;
+  return KF_OK;
+}
+
+kf_status kf_filter_update(kf_filter *filter, double zx, double zy) {
+  if (filter == NULL) return KF_ERR_INVALID_ARG;
+  if (!filter->initialized) return KF_ERR_NOT_INITIALIZED;
+  if (!isfinite(zx) || !isfinite(zy)) return KF_ERR_INVALID_ARG;
+
+  /* Measurement model H: we observe position only. */
+  kf_mat h;
+  KF_TRY(kf_mat_zero(&h, 2, 4));
+  KF_MAT_AT(h, 0, 0) = 1.0;
+  KF_MAT_AT(h, 1, 1) = 1.0;
+
+  const double r_var = filter->config.measurement_noise_std * filter->config.measurement_noise_std;
+  kf_mat r;
+  KF_TRY(kf_mat_zero(&r, 2, 2));
+  KF_MAT_AT(r, 0, 0) = r_var;
+  KF_MAT_AT(r, 1, 1) = r_var;
+
+  kf_mat z, hx, innovation, ht, hp, hpht, s, s_inv;
+  const double z_values[2] = {zx, zy};
+  KF_TRY(kf_mat_from_values(&z, 2, 1, z_values, 2));
+  KF_TRY(kf_mat_mul(&h, &filter->x, &hx));
+  KF_TRY(kf_mat_sub(&z, &hx, &innovation));
+  KF_TRY(kf_mat_transpose(&h, &ht));
+  KF_TRY(kf_mat_mul(&h, &filter->p, &hp));
+  KF_TRY(kf_mat_mul(&hp, &ht, &hpht));
+  KF_TRY(kf_mat_add(&hpht, &r, &s));
+  KF_TRY(kf_mat_invert(&s, &s_inv, KF_MAT_DEFAULT_PIVOT_TOL)); /* KF_ERR_SINGULAR: nothing changed */
+
+  /* Kalman gain K = P H^T S^-1, then x' = x + K * innovation. */
+  kf_mat pht, k, k_innov, x_new;
+  KF_TRY(kf_mat_mul(&filter->p, &ht, &pht));
+  KF_TRY(kf_mat_mul(&pht, &s_inv, &k));
+  KF_TRY(kf_mat_mul(&k, &innovation, &k_innov));
+  KF_TRY(kf_mat_add(&filter->x, &k_innov, &x_new));
+
+  /* Joseph form P' = (I-KH) P (I-KH)^T + K R K^T keeps P symmetric and
+   * positive semi-definite despite rounding. */
+  kf_mat eye, kh, i_kh, i_kh_t, a1, a2, kr, k_t, kr_kt, p_new;
+  KF_TRY(kf_mat_identity(&eye, 4));
+  KF_TRY(kf_mat_mul(&k, &h, &kh));
+  KF_TRY(kf_mat_sub(&eye, &kh, &i_kh));
+  KF_TRY(kf_mat_transpose(&i_kh, &i_kh_t));
+  KF_TRY(kf_mat_mul(&i_kh, &filter->p, &a1));
+  KF_TRY(kf_mat_mul(&a1, &i_kh_t, &a2));
+  KF_TRY(kf_mat_mul(&k, &r, &kr));
+  KF_TRY(kf_mat_transpose(&k, &k_t));
+  KF_TRY(kf_mat_mul(&kr, &k_t, &kr_kt));
+  KF_TRY(kf_mat_add(&a2, &kr_kt, &p_new));
+
+  filter->x = x_new;
+  filter->p = p_new;
+  return KF_OK;
+}
+
+double kf_filter_position_x(const kf_filter *f) { return KF_MAT_AT(f->x, 0, 0); }
+double kf_filter_position_y(const kf_filter *f) { return KF_MAT_AT(f->x, 1, 0); }
+double kf_filter_velocity_x(const kf_filter *f) { return KF_MAT_AT(f->x, 2, 0); }
+double kf_filter_velocity_y(const kf_filter *f) { return KF_MAT_AT(f->x, 3, 0); }
+
+double kf_filter_speed(const kf_filter *f) {
+  return hypot(kf_filter_velocity_x(f), kf_filter_velocity_y(f));
+}
+
+double kf_filter_position_std(const kf_filter *f) {
+  return sqrt(KF_MAT_AT(f->p, 0, 0) + KF_MAT_AT(f->p, 1, 1));
+}
+
+const kf_mat *kf_filter_covariance(const kf_filter *f) { return &f->p; }

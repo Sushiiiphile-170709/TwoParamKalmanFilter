@@ -1,0 +1,13 @@
+# Slower route with tighter turns, 71 s in total.
+# Start at 5 m/s heading east, three 90 degree corners at low speed.
+duration_s,accel_mps2,yaw_rate_rad_s
+5,1,0
+10,0,0
+5,-1,0
+6,0,0.26
+10,0,0
+6,0,-0.26
+8,0,0
+5,1,0
+10,0,0
+6,0,0.26
